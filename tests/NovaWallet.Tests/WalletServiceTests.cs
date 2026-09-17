@@ -287,5 +287,77 @@ public class WalletServiceTests
         Assert.Equal("WALLET_NOT_FOUND", ex.ErrorCode);
         Assert.Equal(404, ex.StatusCode);
     }
+
+    [Fact]
+    public async Task CreditWallet_ThrowsInvalidAmountException_WhenAmountCausesIntegerOverflow()
+    {
+        var (db, service) = CreateTestContext();
+        var wallet = await service.CreateWalletAsync("CUST-OVERFLOW", "NGN");
+
+        // Seed with starting balance
+        await service.CreditWalletAsync(new CreditWalletCommand(wallet.Id, 10_000L));
+
+        // Attempting to credit long.MaxValue to trigger integer wrap-around
+        var cmd = new CreditWalletCommand(wallet.Id, long.MaxValue);
+
+        var ex = await Assert.ThrowsAsync<InvalidAmountException>(() => service.CreditWalletAsync(cmd));
+        Assert.Equal("INVALID_AMOUNT", ex.ErrorCode);
+
+        // Verify balance is completely protected and never turned negative
+        var balance = await service.GetBalanceAsync(wallet.Id);
+        Assert.Equal(10_000L, balance.AvailableBalanceKobo);
+    }
+
+    [Fact]
+    public async Task Transfer_RejectsExtremeAmount_WhenAttemptingIntegerOverflow()
+    {
+        var (db, service) = CreateTestContext();
+        var sender = await service.CreateWalletAsync("CUST-SENDER-OVF", "NGN");
+        var receiver = await service.CreateWalletAsync("CUST-RECEIVER-OVF", "NGN");
+
+        await service.CreditWalletAsync(new CreditWalletCommand(sender.Id, 1_000_000L));
+
+        // Attempt transfer of long.MaxValue
+        var cmd = new TransferCommand(sender.Id, receiver.Id, long.MaxValue);
+
+        await Assert.ThrowsAnyAsync<WalletDomainException>(() => service.TransferAsync(cmd));
+
+        // Verify balance is preserved
+        var senderBal = await service.GetBalanceAsync(sender.Id);
+        Assert.Equal(1_000_000L, senderBal.AvailableBalanceKobo);
+    }
+
+    [Fact]
+    public async Task GetStatement_ReturnsPaginatedHistory_InDescendingOrderNewestFirst()
+    {
+        var (db, service) = CreateTestContext();
+        var sender = await service.CreateWalletAsync("CUST-STMT-SENDER", "NGN");
+        var receiver = await service.CreateWalletAsync("CUST-STMT-RECEIVER", "NGN");
+
+        // Seed 3 sequential transactions
+        await service.CreditWalletAsync(new CreditWalletCommand(sender.Id, 1_000_000L, "Deposit 1"));
+        await service.TransferAsync(new TransferCommand(sender.Id, receiver.Id, 100_000L, "Transfer 1"));
+        await service.TransferAsync(new TransferCommand(sender.Id, receiver.Id, 200_000L, "Transfer 2"));
+
+        // Page 1 with pageSize = 2
+        var statementPage1 = await service.GetStatementAsync(sender.Id, page: 1, pageSize: 2);
+
+        Assert.Equal(3, statementPage1.TotalCount);
+        Assert.Equal(1, statementPage1.Page);
+        Assert.Equal(2, statementPage1.PageSize);
+        Assert.Equal(2, statementPage1.TotalPages);
+        Assert.Equal(2, statementPage1.Items.Count);
+        Assert.True(statementPage1.HasNextPage);
+        Assert.False(statementPage1.HasPreviousPage);
+
+        // Verify ordering: newest first
+        Assert.True(statementPage1.Items[0].CreatedAt >= statementPage1.Items[1].CreatedAt);
+
+        // Page 2 with pageSize = 2
+        var statementPage2 = await service.GetStatementAsync(sender.Id, page: 2, pageSize: 2);
+        Assert.Single(statementPage2.Items);
+        Assert.False(statementPage2.HasNextPage);
+        Assert.True(statementPage2.HasPreviousPage);
+    }
 }
 

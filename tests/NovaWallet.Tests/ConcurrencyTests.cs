@@ -124,5 +124,120 @@ public class ConcurrencyTests
             Assert.Equal(1_000_000L, credits.Sum(c => c.AmountKobo));
         }
     }
+
+    [Fact]
+    public async Task BiDirectionalConcurrentTransfers_NeverDeadlock_AndConserveTotalSystemBalance()
+    {
+        // ARRANGE: Alice and Bob each start with ₦50,000 (5,000,000 kobo)
+        var dbName = "DeadlockTestDb_" + Guid.NewGuid();
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseInMemoryDatabase(databaseName: dbName)
+            .Options;
+
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["WalletSettings:DailyOutboundLimitKobo"] = "50000000" // ₦500k limit
+            })
+            .Build();
+
+        Guid aliceWalletId;
+        Guid bobWalletId;
+
+        using (var setupDb = new AppDbContext(options))
+        {
+            var service = new WalletService(setupDb, config, NullLogger<WalletService>.Instance);
+            var alice = await service.CreateWalletAsync("CUST-ALICE-DEADLOCK", "NGN");
+            var bob = await service.CreateWalletAsync("CUST-BOB-DEADLOCK", "NGN");
+
+            await service.CreditWalletAsync(new CreditWalletCommand(alice.Id, 5_000_000L));
+            await service.CreditWalletAsync(new CreditWalletCommand(bob.Id, 5_000_000L));
+
+            aliceWalletId = alice.Id;
+            bobWalletId = bob.Id;
+        }
+
+        // ACT: 10 threads transfer Alice -> Bob, while 10 threads transfer Bob -> Alice simultaneously
+        const int requestsPerDirection = 10;
+        const int totalRequests = requestsPerDirection * 2;
+        const long transferAmountKobo = 200_000L; // ₦2,000 per transfer
+
+        var successfulTransfers = new ConcurrentBag<Transaction>();
+        var exceptions = new ConcurrentBag<Exception>();
+        var barrier = new SemaphoreSlim(0, totalRequests);
+
+        // 10 tasks: Alice -> Bob
+        var aliceToBobTasks = Enumerable.Range(0, requestsPerDirection).Select(async i =>
+        {
+            using var db = new AppDbContext(options);
+            var service = new WalletService(db, config, NullLogger<WalletService>.Instance);
+
+            var cmd = new TransferCommand(aliceWalletId, bobWalletId, transferAmountKobo, $"Alice to Bob #{i}", $"A2B-{i}");
+            await barrier.WaitAsync();
+
+            try
+            {
+                var tx = await service.TransferAsync(cmd);
+                successfulTransfers.Add(tx);
+            }
+            catch (Exception ex)
+            {
+                exceptions.Add(ex);
+            }
+        });
+
+        // 10 tasks: Bob -> Alice
+        var bobToAliceTasks = Enumerable.Range(0, requestsPerDirection).Select(async i =>
+        {
+            using var db = new AppDbContext(options);
+            var service = new WalletService(db, config, NullLogger<WalletService>.Instance);
+
+            var cmd = new TransferCommand(bobWalletId, aliceWalletId, transferAmountKobo, $"Bob to Alice #{i}", $"B2A-{i}");
+            await barrier.WaitAsync();
+
+            try
+            {
+                var tx = await service.TransferAsync(cmd);
+                successfulTransfers.Add(tx);
+            }
+            catch (Exception ex)
+            {
+                exceptions.Add(ex);
+            }
+        });
+
+        var allTasks = aliceToBobTasks.Concat(bobToAliceTasks).ToList();
+
+        // Release all 20 threads simultaneously
+        barrier.Release(totalRequests);
+
+        // Timeout safety: if deadlock occurs, Task.WhenAny will trigger timeout failure
+        var completedTask = await Task.WhenAny(Task.WhenAll(allTasks), Task.Delay(TimeSpan.FromSeconds(15)));
+        Assert.True(completedTask != Task.Delay(TimeSpan.FromSeconds(15)), "Deadlock detected! Bi-directional transfers timed out.");
+
+        // ASSERT: Zero exceptions, all 20 completed cleanly
+        Assert.Empty(exceptions);
+        Assert.Equal(totalRequests, successfulTransfers.Count);
+
+        using (var verifyDb = new AppDbContext(options))
+        {
+            var service = new WalletService(verifyDb, config, NullLogger<WalletService>.Instance);
+            var alice = await service.GetBalanceAsync(aliceWalletId);
+            var bob = await service.GetBalanceAsync(bobWalletId);
+
+            // Since net transfer is 0 (10 sent, 10 received of identical amount), balances should remain ₦50,000
+            Assert.Equal(5_000_000L, alice.AvailableBalanceKobo);
+            Assert.Equal(5_000_000L, bob.AvailableBalanceKobo);
+
+            // Conservation of money: total remains exactly ₦100,000
+            Assert.Equal(10_000_000L, alice.AvailableBalanceKobo + bob.AvailableBalanceKobo);
+
+            // Exactly 20 Debit entries and 20 Credit entries
+            var totalDebits = await verifyDb.LedgerEntries.CountAsync(e => e.EntryType == Domain.Enums.EntryType.Debit);
+            var totalCredits = await verifyDb.LedgerEntries.CountAsync(e => e.EntryType == Domain.Enums.EntryType.Credit);
+            Assert.Equal(20, totalDebits);
+            Assert.Equal(20 + 2, totalCredits); // +2 from initial funding credits
+        }
+    }
 }
 

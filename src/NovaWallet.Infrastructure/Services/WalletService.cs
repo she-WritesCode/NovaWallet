@@ -191,11 +191,21 @@ public class WalletService : IWalletService
 
                 var now = DateTime.UtcNow;
                 var beforeBalance = wallet.BookBalanceKobo;
-                var afterBalance = beforeBalance + command.AmountKobo;
+
+                // Protect against integer overflow wrap-around attacks
+                if (long.MaxValue - beforeBalance < command.AmountKobo)
+                {
+                    throw new InvalidAmountException(command.AmountKobo);
+                }
+
+                var afterBalance = checked(beforeBalance + command.AmountKobo);
 
                 // Mutate balances in sync
-                wallet.AvailableBalanceKobo += command.AmountKobo;
-                wallet.BookBalanceKobo += command.AmountKobo;
+                checked
+                {
+                    wallet.AvailableBalanceKobo += command.AmountKobo;
+                    wallet.BookBalanceKobo += command.AmountKobo;
+                }
                 wallet.UpdatedAt = now;
 
                 var reference = !string.IsNullOrWhiteSpace(command.Reference)
@@ -357,7 +367,7 @@ public class WalletService : IWalletService
                 throw new CurrencyMismatchException(sourceWallet.Currency, destinationWallet.Currency);
             }
 
-            // Midnight WAT Daily Limit check
+            // Midnight WAT Daily Limit check (guarded against overflow)
             var todayWat = GetTodayWatDate();
             if (sourceWallet.DailyLimitResetDate != todayWat)
             {
@@ -365,7 +375,8 @@ public class WalletService : IWalletService
                 sourceWallet.DailyLimitResetDate = todayWat;
             }
 
-            if (sourceWallet.DailyOutboundTotalKobo + command.AmountKobo > _dailyLimitKobo)
+            if (long.MaxValue - sourceWallet.DailyOutboundTotalKobo < command.AmountKobo ||
+                sourceWallet.DailyOutboundTotalKobo + command.AmountKobo > _dailyLimitKobo)
             {
                 throw new DailyLimitExceededException(
                     sourceWallet.Id, 
@@ -385,23 +396,32 @@ public class WalletService : IWalletService
                     sourceWallet.Currency);
             }
 
+            // Protect destination balance against arithmetic overflow wrap-around
+            if (long.MaxValue - destinationWallet.AvailableBalanceKobo < command.AmountKobo)
+            {
+                throw new InvalidAmountException(command.AmountKobo);
+            }
+
             var now = DateTime.UtcNow;
 
             var sourceBefore = sourceWallet.BookBalanceKobo;
-            var sourceAfter = sourceBefore - command.AmountKobo;
+            var sourceAfter = checked(sourceBefore - command.AmountKobo);
 
             var destBefore = destinationWallet.BookBalanceKobo;
-            var destAfter = destBefore + command.AmountKobo;
+            var destAfter = checked(destBefore + command.AmountKobo);
 
-            // Mutate balances
-            sourceWallet.AvailableBalanceKobo -= command.AmountKobo;
-            sourceWallet.BookBalanceKobo -= command.AmountKobo;
-            sourceWallet.DailyOutboundTotalKobo += command.AmountKobo;
-            sourceWallet.UpdatedAt = now;
+            // Mutate balances in lockstep
+            checked
+            {
+                sourceWallet.AvailableBalanceKobo -= command.AmountKobo;
+                sourceWallet.BookBalanceKobo -= command.AmountKobo;
+                sourceWallet.DailyOutboundTotalKobo += command.AmountKobo;
+                sourceWallet.UpdatedAt = now;
 
-            destinationWallet.AvailableBalanceKobo += command.AmountKobo;
-            destinationWallet.BookBalanceKobo += command.AmountKobo;
-            destinationWallet.UpdatedAt = now;
+                destinationWallet.AvailableBalanceKobo += command.AmountKobo;
+                destinationWallet.BookBalanceKobo += command.AmountKobo;
+                destinationWallet.UpdatedAt = now;
+            }
 
             var reference = !string.IsNullOrWhiteSpace(command.Reference)
                 ? command.Reference
