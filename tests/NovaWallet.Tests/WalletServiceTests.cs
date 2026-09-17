@@ -195,5 +195,97 @@ public class WalletServiceTests
         Assert.Equal("INVALID_AMOUNT", ex.ErrorCode);
         Assert.Equal(400, ex.StatusCode);
     }
+
+    [Fact]
+    public async Task CreateWallet_ThrowsDuplicateWalletException_WhenWalletAlreadyExistsForCurrency()
+    {
+        var (db, service) = CreateTestContext();
+        await service.CreateWalletAsync("CUST-DUP-1", "NGN");
+
+        var ex = await Assert.ThrowsAsync<DuplicateWalletException>(() => service.CreateWalletAsync("CUST-DUP-1", "NGN"));
+        Assert.Equal("DUPLICATE_WALLET", ex.ErrorCode);
+        Assert.Equal(409, ex.StatusCode);
+    }
+
+    [Fact]
+    public async Task Transfer_ThrowsCurrencyMismatchException_WhenCurrenciesDiffer()
+    {
+        var (db, service) = CreateTestContext();
+        var ngnWallet = await service.CreateWalletAsync("CUST-NGN", "NGN");
+        var usdWallet = await service.CreateWalletAsync("CUST-USD", "USD");
+
+        await service.CreditWalletAsync(new CreditWalletCommand(ngnWallet.Id, 100_000L));
+
+        var cmd = new TransferCommand(ngnWallet.Id, usdWallet.Id, 50_000L);
+
+        var ex = await Assert.ThrowsAsync<CurrencyMismatchException>(() => service.TransferAsync(cmd));
+        Assert.Equal("CURRENCY_MISMATCH", ex.ErrorCode);
+        Assert.Equal(400, ex.StatusCode);
+        Assert.Contains("NGN", ex.Message);
+        Assert.Contains("USD", ex.Message);
+    }
+
+    [Fact]
+    public async Task Transfer_ThrowsWalletFrozenException_WhenSourceOrDestinationIsFrozen()
+    {
+        var (db, service) = CreateTestContext();
+        var sender = await service.CreateWalletAsync("CUST-FROZEN-SENDER", "NGN");
+        var receiver = await service.CreateWalletAsync("CUST-ACTIVE-RECEIVER", "NGN");
+
+        await service.CreditWalletAsync(new CreditWalletCommand(sender.Id, 100_000L));
+
+        // Freeze sender wallet
+        sender.Status = WalletStatus.Frozen;
+        await db.SaveChangesAsync();
+
+        var cmd = new TransferCommand(sender.Id, receiver.Id, 50_000L);
+
+        var ex = await Assert.ThrowsAsync<WalletFrozenException>(() => service.TransferAsync(cmd));
+        Assert.Equal("WALLET_FROZEN", ex.ErrorCode);
+        Assert.Equal(422, ex.StatusCode);
+    }
+
+    [Fact]
+    public async Task CreditWallet_ThrowsWalletFrozenException_WhenWalletIsFrozen()
+    {
+        var (db, service) = CreateTestContext();
+        var wallet = await service.CreateWalletAsync("CUST-FROZEN-CREDIT", "NGN");
+
+        wallet.Status = WalletStatus.Frozen;
+        await db.SaveChangesAsync();
+
+        var cmd = new CreditWalletCommand(wallet.Id, 50_000L);
+
+        var ex = await Assert.ThrowsAsync<WalletFrozenException>(() => service.CreditWalletAsync(cmd));
+        Assert.Equal("WALLET_FROZEN", ex.ErrorCode);
+        Assert.Equal(422, ex.StatusCode);
+    }
+
+    [Fact]
+    public async Task Transfer_ThrowsWalletNotFoundException_WhenDestinationDoesNotExist()
+    {
+        var (db, service) = CreateTestContext();
+        var sender = await service.CreateWalletAsync("CUST-EXISTS", "NGN");
+        var nonExistentId = Guid.NewGuid();
+
+        await service.CreditWalletAsync(new CreditWalletCommand(sender.Id, 100_000L));
+
+        var cmd = new TransferCommand(sender.Id, nonExistentId, 50_000L);
+
+        var ex = await Assert.ThrowsAsync<WalletNotFoundException>(() => service.TransferAsync(cmd));
+        Assert.Equal("WALLET_NOT_FOUND", ex.ErrorCode);
+        Assert.Equal(404, ex.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetBalance_ThrowsWalletNotFoundException_WhenWalletDoesNotExist()
+    {
+        var (db, service) = CreateTestContext();
+        var nonExistentId = Guid.NewGuid();
+
+        var ex = await Assert.ThrowsAsync<WalletNotFoundException>(() => service.GetBalanceAsync(nonExistentId));
+        Assert.Equal("WALLET_NOT_FOUND", ex.ErrorCode);
+        Assert.Equal(404, ex.StatusCode);
+    }
 }
 
