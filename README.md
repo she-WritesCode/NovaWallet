@@ -53,7 +53,7 @@ erDiagram
 
 - **Decision**: Balance mutations lock affected wallet rows using PostgreSQL pessimistic locking (`SELECT ... FOR UPDATE`).
 - **Why not Optimistic Locking (`Version`)?** Optimistic concurrency works well under low contention, but under concurrent bursts (e.g. 20 concurrent transfers hitting the same wallet), optimistic concurrency throws `DbUpdateConcurrencyException` on 19 of them, requiring complex application-level retry loops. Pessimistic row locking allows the database to queue requests cleanly and process each transfer sequentially without spurious failures.
-- **Deadlock Prevention**: Transfers lock the source and destination wallets in a **deterministic order** (e.g. ordered by `Wallet.Id` GUID). This eliminates circular wait conditions (Alice $\rightarrow$ Bob while Bob $\rightarrow$ Alice).
+- **Deadlock Prevention**: Transfers lock the source and destination wallets in a **deterministic order** (e.g. ordered by `Wallet.Id` GUID). This eliminates circular wait conditions (Chidi $\rightarrow$ Amaka while Amaka $\rightarrow$ Chidi).
 
 ### 2.3 Database Migrations in Production vs. Containerized Demo
 
@@ -133,21 +133,21 @@ TOKEN=$(curl -s -X POST "http://localhost:8080/api/auth/token?customerId=CUST-00
 WALLET_A=$(curl -s -X POST "http://localhost:8080/api/wallets" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"customerId":"CUST-ALICE","currency":"NGN"}' | grep -o '"id":"[^"]*' | cut -d'"' -f4)
+  -d '{"customerId":"CUST-CHIDI","currency":"NGN"}' | grep -o '"id":"[^"]*' | cut -d'"' -f4)
 
 # 3. Create Destination Wallet
 WALLET_B=$(curl -s -X POST "http://localhost:8080/api/wallets" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"customerId":"CUST-BOB","currency":"NGN"}' | grep -o '"id":"[^"]*' | cut -d'"' -f4)
+  -d '{"customerId":"CUST-AMAKA","currency":"NGN"}' | grep -o '"id":"[^"]*' | cut -d'"' -f4)
 
-# 4. Inbound NIP Credit to Alice (₦50,000 = 5,000,000 kobo)
+# 4. Inbound NIP Credit to Chidi (₦50,000 = 5,000,000 kobo)
 curl -X POST "http://localhost:8080/api/wallets/$WALLET_A/credit" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"amountKobo":5000000,"narration":"Inbound NIP salary"}'
 
-# 5. Idempotent Transfer from Alice to Bob (₦15,000 = 1,500,000 kobo)
+# 5. Idempotent Transfer from Chidi to Amaka (₦15,000 = 1,500,000 kobo)
 curl -i -X POST "http://localhost:8080/api/wallets/$WALLET_A/transfer" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Idempotency-Key: transfer-req-uuid-001" \
