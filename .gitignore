@@ -1,0 +1,47 @@
+# .NET build artifacts
+bin/
+obj/
+[Bb]in/
+[Oo]bj/
+
+# Visual Studio / VS Code
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.dbmdl
+*.jfm
+
+# Rider / JetBrains
+.idea/
+
+# Test results
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+
+# Packages
+packages/
+*.nupkg
+
+# Local app/config secrets
+appsettings.Development.json
+appsettings.Local.json
+secrets.json
+.env
+.env.*
+
+# Databases / local data
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
