@@ -123,7 +123,7 @@ All endpoints (except `POST /api/auth/token` and `GET /health`) are protected by
 | `POST` | `/api/wallets/{id}/transfer`  | Concurrency-safe atomic transfer between wallets       |    ✅ Yes     | `Idempotency-Key: <unique-key>`, `Authorization: Bearer <token>` |
 | `GET`  | `/api/wallets/{id}/statement` | Returns paginated transaction statement (newest first) |    ✅ Yes     | `Authorization: Bearer <token>`                                  |
 
-### Quick Test Workflow with cURL:
+### Quick Test Workflow with cURL
 
 ```bash
 # 1. Generate JWT Token
@@ -154,6 +154,10 @@ curl -i -X POST "http://localhost:8080/api/wallets/$WALLET_A/transfer" \
   -H "Content-Type: application/json" \
   -d "{\"destinationWalletId\":\"$WALLET_B\",\"amountKobo\":1500000,\"narration\":\"Rent contribution\"}"
 ```
+
+### Visual Testing with .http File (REST Client / VS Code / Rider / Visual Studio)
+
+A comprehensive request suite is pre-configured at `src/NovaWallet.Api/NovaWallet.Api.http`. You can execute tests (Health checks, Auth, Create Wallets, NIP Credits, Transfers, Idempotency Replays, Tampering, Statements, and Error handling) with a single click in your IDE.
 
 ---
 

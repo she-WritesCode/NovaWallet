@@ -1,6 +1,164 @@
-@NovaWallet.Api_HostAddress = http://localhost:5131
+@baseUrl = http://localhost:8080
+@contentType = application/json
 
-GET {{NovaWallet.Api_HostAddress}}/weatherforecast/
+### 1. Health Check
+# Checks database connectivity and service readiness
+GET {{baseUrl}}/health
 Accept: application/json
 
 ###
+
+### 2. Generate Mock JWT Auth Token
+# Returns a valid JWT token for testing protected endpoints
+# @name auth
+POST {{baseUrl}}/api/auth/token?customerId=CUST-CHIDI-001
+Accept: {{contentType}}
+
+### Extract Token from response (in VS Code REST Client / Visual Studio)
+@authToken = {{auth.response.body.token}}
+
+###
+
+### 3. Create Wallet for Chidi (Source Wallet)
+# @name createChidiWallet
+POST {{baseUrl}}/api/wallets
+Authorization: Bearer {{authToken}}
+Content-Type: {{contentType}}
+
+{
+  "customerId": "CUST-CHIDI",
+  "currency": "NGN"
+}
+
+###
+
+### 4. Create Wallet for Amaka (Destination Wallet)
+# @name createAmakaWallet
+POST {{baseUrl}}/api/wallets
+Authorization: Bearer {{authToken}}
+Content-Type: {{contentType}}
+
+{
+  "customerId": "CUST-AMAKA",
+  "currency": "NGN"
+}
+
+### Store Wallet IDs
+@chidiWalletId = {{createChidiWallet.response.body.id}}
+@amakaWalletId = {{createAmakaWallet.response.body.id}}
+
+###
+
+### 5. Get Chidi's Wallet Balance (Initial ₦0)
+GET {{baseUrl}}/api/wallets/{{chidiWalletId}}/balance
+Authorization: Bearer {{authToken}}
+Accept: {{contentType}}
+
+###
+
+### 6. Credit Chidi's Wallet (Simulating Inbound NIP Transfer)
+# Amount: ₦50,000 = 5,000,000 kobo
+POST {{baseUrl}}/api/wallets/{{chidiWalletId}}/credit
+Authorization: Bearer {{authToken}}
+Content-Type: {{contentType}}
+
+{
+  "amountKobo": 5000000,
+  "narration": "Inbound NIP transfer - Salary",
+  "reference": "NIP-DEP-001"
+}
+
+###
+
+### 7. Transfer Funds from Chidi to Amaka (₦15,000 = 1,500,000 kobo)
+# Idempotent Transfer: Uses unique Idempotency-Key
+# @name initialTransfer
+POST {{baseUrl}}/api/wallets/{{chidiWalletId}}/transfer
+Authorization: Bearer {{authToken}}
+Idempotency-Key: chidi-to-amaka-tx-001
+Content-Type: {{contentType}}
+
+{
+  "destinationWalletId": "{{amakaWalletId}}",
+  "amountKobo": 1500000,
+  "narration": "Transfer to Amaka for groceries",
+  "reference": "TXN-REF-001"
+}
+
+###
+
+### 8. Idempotency Test: Replay Identical Request (Network Retry Simulation)
+# Same Key + Same Payload -> Returns cached response with X-Cache: HIT (Zero duplicate deduction)
+POST {{baseUrl}}/api/wallets/{{chidiWalletId}}/transfer
+Authorization: Bearer {{authToken}}
+Idempotency-Key: chidi-to-amaka-tx-001
+Content-Type: {{contentType}}
+
+{
+  "destinationWalletId": "{{amakaWalletId}}",
+  "amountKobo": 1500000,
+  "narration": "Transfer to Amaka for groceries",
+  "reference": "TXN-REF-001"
+}
+
+###
+
+### 9. Idempotency Test: Tampered Payload Replay (Malicious / Conflict Simulation)
+# Same Key + Changed Amount -> Returns HTTP 409 Conflict
+POST {{baseUrl}}/api/wallets/{{chidiWalletId}}/transfer
+Authorization: Bearer {{authToken}}
+Idempotency-Key: chidi-to-amaka-tx-001
+Content-Type: {{contentType}}
+
+{
+  "destinationWalletId": "{{amakaWalletId}}",
+  "amountKobo": 3000000,
+  "narration": "Tampered transfer attempt"
+}
+
+###
+
+### 10. Get Chidi's Balance After Transfer (Should be ₦35,000 = 3,500,000 kobo)
+GET {{baseUrl}}/api/wallets/{{chidiWalletId}}/balance
+Authorization: Bearer {{authToken}}
+Accept: {{contentType}}
+
+###
+
+### 11. Get Amaka's Balance After Transfer (Should be ₦15,000 = 1,500,000 kobo)
+GET {{baseUrl}}/api/wallets/{{amakaWalletId}}/balance
+Authorization: Bearer {{authToken}}
+Accept: {{contentType}}
+
+###
+
+### 12. Get Chidi's Paginated Account Statement (Newest First)
+GET {{baseUrl}}/api/wallets/{{chidiWalletId}}/statement?page=1&pageSize=10
+Authorization: Bearer {{authToken}}
+Accept: {{contentType}}
+
+###
+
+### 13. Edge Case: Validation Error (Negative Amount -> RFC 7807 Problem Details)
+POST {{baseUrl}}/api/wallets/{{chidiWalletId}}/credit
+Authorization: Bearer {{authToken}}
+Content-Type: {{contentType}}
+
+{
+  "amountKobo": -50000,
+  "narration": "Invalid negative credit test"
+}
+
+###
+
+### 14. Edge Case: Insufficient Funds (Attempting to transfer ₦100,000 with ₦35,000 balance)
+POST {{baseUrl}}/api/wallets/{{chidiWalletId}}/transfer
+Authorization: Bearer {{authToken}}
+Idempotency-Key: overdraft-test-key-001
+Content-Type: {{contentType}}
+
+{
+  "destinationWalletId": "{{amakaWalletId}}",
+  "amountKobo": 10000000,
+  "narration": "Overdraft attempt"
+}
