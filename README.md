@@ -84,7 +84,7 @@ docker compose up --build
 
 This will:
 
-1. Start PostgreSQL 16 on port `5432` with healthcheck.
+1. Start PostgreSQL 16 (mapped to host port `5433` to prevent conflicts with native local instances) with healthcheck.
 2. Build the multi-stage .NET 8 API image.
 3. Automatically apply EF Core migrations on startup.
 4. Expose the API and OpenAPI/Swagger UI on port `8080`.
@@ -113,15 +113,15 @@ This will:
 
 All endpoints (except `POST /api/auth/token` and `GET /health`) are protected by a JWT Bearer check.
 
-| Method | Endpoint | Description | Auth Required | Key Headers |
-| :--- | :--- | :--- | :---: | :--- |
-| `POST` | `/api/auth/token` | Generates a valid test JWT token with customer claims | ❌ No | — |
-| `GET` | `/health` | Health & database connectivity check | ❌ No | — |
-| `POST` | `/api/wallets` | Creates a new wallet (initial balance = ₦0.00) | ✅ Yes | `Authorization: Bearer <token>` |
-| `GET` | `/api/wallets/{id}/balance` | Retrieves wallet balance & currency in kobo | ✅ Yes | `Authorization: Bearer <token>` |
-| `POST` | `/api/wallets/{id}/credit` | Simulates an inbound NIP instant settlement deposit | ✅ Yes | `Authorization: Bearer <token>` |
-| `POST` | `/api/wallets/{id}/transfer` | Concurrency-safe atomic transfer between wallets | ✅ Yes | `Idempotency-Key: <unique-key>`, `Authorization: Bearer <token>` |
-| `GET` | `/api/wallets/{id}/statement` | Returns paginated transaction statement (newest first) | ✅ Yes | `Authorization: Bearer <token>` |
+| Method | Endpoint                      | Description                                            | Auth Required | Key Headers                                                      |
+| :----- | :---------------------------- | :----------------------------------------------------- | :-----------: | :--------------------------------------------------------------- |
+| `POST` | `/api/auth/token`             | Generates a valid test JWT token with customer claims  |     ❌ No     | —                                                                |
+| `GET`  | `/health`                     | Health & database connectivity check                   |     ❌ No     | —                                                                |
+| `POST` | `/api/wallets`                | Creates a new wallet (initial balance = ₦0.00)         |    ✅ Yes     | `Authorization: Bearer <token>`                                  |
+| `GET`  | `/api/wallets/{id}/balance`   | Retrieves wallet balance & currency in kobo            |    ✅ Yes     | `Authorization: Bearer <token>`                                  |
+| `POST` | `/api/wallets/{id}/credit`    | Simulates an inbound NIP instant settlement deposit    |    ✅ Yes     | `Authorization: Bearer <token>`                                  |
+| `POST` | `/api/wallets/{id}/transfer`  | Concurrency-safe atomic transfer between wallets       |    ✅ Yes     | `Idempotency-Key: <unique-key>`, `Authorization: Bearer <token>` |
+| `GET`  | `/api/wallets/{id}/statement` | Returns paginated transaction statement (newest first) |    ✅ Yes     | `Authorization: Bearer <token>`                                  |
 
 ### Quick Test Workflow with cURL:
 
@@ -164,7 +164,7 @@ dotnet test
 ```
 
 The test suite runs:
-* **`ConcurrencyTests.cs`**: Fires 20 concurrent transfer tasks of ₦1,000 simultaneously against a wallet holding ₦10,000. Asserts that exactly 10 succeed, exactly 10 fail with `InsufficientFundsException`, balance never drops below zero, and total system money is conserved.
-* **`IdempotencyServiceTests.cs`**: Proves exact replay returns cached responses with `X-Cache: HIT` and payload alterations return `422 IDEMPOTENCY_KEY_PAYLOAD_MISMATCH`.
-* **`WalletServiceTests.cs`**: Validates wallet creation, inbound NIP deposits, daily limit bounds, WAT midnight rollover, and error formatting.
 
+- **`ConcurrencyTests.cs`**: Fires 20 concurrent transfer tasks of ₦1,000 simultaneously against a wallet holding ₦10,000. Asserts that exactly 10 succeed, exactly 10 fail with `InsufficientFundsException`, balance never drops below zero, and total system money is conserved.
+- **`IdempotencyServiceTests.cs`**: Proves exact replay returns cached responses with `X-Cache: HIT` and payload alterations return `422 IDEMPOTENCY_KEY_PAYLOAD_MISMATCH`.
+- **`WalletServiceTests.cs`**: Validates wallet creation, inbound NIP deposits, daily limit bounds, WAT midnight rollover, and error formatting.
