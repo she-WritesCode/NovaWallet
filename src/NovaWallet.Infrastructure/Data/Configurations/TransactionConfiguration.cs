@@ -84,9 +84,16 @@ public class TransactionConfiguration : IEntityTypeConfiguration<Transaction>
         .HasForeignKey(t => t.FeeWalletId)
         .OnDelete(DeleteBehavior.Restrict);
 
+    // Self-referencing reversal tracking
+    builder.HasOne(t => t.OriginalTransaction)
+        .WithMany(t => t.ReversalTransactions)
+        .HasForeignKey(t => t.OriginalTransactionId)
+        .OnDelete(DeleteBehavior.Restrict);
+
     // Index for querying transactions by wallet — used for statements
     builder.HasIndex(t => t.SourceWalletId);
     builder.HasIndex(t => t.DestinationWalletId);
+    builder.HasIndex(t => t.OriginalTransactionId);
     builder.HasIndex(t => new { t.Status, t.CreatedAt });
   }
 }

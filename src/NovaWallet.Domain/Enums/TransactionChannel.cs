@@ -4,5 +4,6 @@ public enum TransactionChannel
 {
     MobileApp,
     Ussd,
-    Api
+    Api,
+    Nip
 }

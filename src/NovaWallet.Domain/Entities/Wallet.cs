@@ -18,8 +18,6 @@ public class Wallet
     public long DailyOutboundTotalKobo { get; set; }
     public DateOnly DailyLimitResetDate { get; set; }
 
-    public int Version { get; set; }
-
     public DateTime CreatedAt { get; set; }
     public DateTime UpdatedAt { get; set; }
 

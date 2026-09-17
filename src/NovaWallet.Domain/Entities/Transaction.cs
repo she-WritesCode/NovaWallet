@@ -46,7 +46,12 @@ public class Transaction
     public DateTime? FailedAt { get; set; }
     public DateTime? ReversedAt { get; set; }
 
+    // Links a reversal or refund back to the original transaction it undoes
+    public Guid? OriginalTransactionId { get; set; }
+
     // Navigation properties
+    public Transaction? OriginalTransaction { get; set; }
+    public ICollection<Transaction> ReversalTransactions { get; set; } = [];
     public Wallet? SourceWallet { get; set; }
     public Wallet? DestinationWallet { get; set; }
     public Wallet? FeeWallet { get; set; }

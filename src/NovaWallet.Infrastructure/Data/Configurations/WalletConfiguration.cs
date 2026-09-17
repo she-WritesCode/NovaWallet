@@ -43,9 +43,6 @@ public class WalletConfiguration : IEntityTypeConfiguration<Wallet>
     builder.Property(w => w.DailyLimitResetDate)
         .IsRequired();
 
-    builder.Property(w => w.Version)
-        .IsConcurrencyToken();
-
     builder.Property(w => w.CreatedAt)
         .HasDefaultValueSql("NOW()")
         .IsRequired();
