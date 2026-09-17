@@ -161,5 +161,39 @@ public class WalletServiceTests
         var ex = await Assert.ThrowsAsync<SameWalletTransferException>(() => service.TransferAsync(cmd));
         Assert.Equal("SELF_TRANSFER_NOT_ALLOWED", ex.ErrorCode);
     }
+
+    [Theory]
+    [InlineData(-40_000L)]
+    [InlineData(0L)]
+    public async Task CreditWallet_ThrowsInvalidAmountException_WhenAmountIsZeroOrNegative(long amountKobo)
+    {
+        var (db, service) = CreateTestContext();
+        var wallet = await service.CreateWalletAsync("CUST-CREDIT-TEST", "NGN");
+
+        var cmd = new CreditWalletCommand(wallet.Id, amountKobo, "NIP_CREDIT");
+
+        var ex = await Assert.ThrowsAsync<InvalidAmountException>(() => service.CreditWalletAsync(cmd));
+        Assert.Equal("INVALID_AMOUNT", ex.ErrorCode);
+        Assert.Equal(400, ex.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(-40_000L)]
+    [InlineData(0L)]
+    public async Task Transfer_ThrowsInvalidAmountException_WhenAmountIsZeroOrNegative(long amountKobo)
+    {
+        var (db, service) = CreateTestContext();
+        var sender = await service.CreateWalletAsync("CUST-SENDER", "NGN");
+        var receiver = await service.CreateWalletAsync("CUST-RECEIVER", "NGN");
+
+        // Pre-fund sender to confirm rejection is due to amount validation, not insufficient funds
+        await service.CreditWalletAsync(new CreditWalletCommand(sender.Id, 100_000L, "INITIAL_FUNDING"));
+
+        var cmd = new TransferCommand(sender.Id, receiver.Id, amountKobo);
+
+        var ex = await Assert.ThrowsAsync<InvalidAmountException>(() => service.TransferAsync(cmd));
+        Assert.Equal("INVALID_AMOUNT", ex.ErrorCode);
+        Assert.Equal(400, ex.StatusCode);
+    }
 }
 
