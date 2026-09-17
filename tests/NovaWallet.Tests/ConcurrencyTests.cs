@@ -64,10 +64,10 @@ public class ConcurrencyTests
             var service = new WalletService(db, config, NullLogger<WalletService>.Instance);
 
             var cmd = new TransferCommand(
-                sourceWalletId, 
-                destinationWalletId, 
-                transferAmountKobo, 
-                $"Concurrent burst transfer #{i}", 
+                sourceWalletId,
+                destinationWalletId,
+                transferAmountKobo,
+                $"Concurrent burst transfer #{i}",
                 $"BURST-{i}");
 
             // Wait for all tasks to be spawned before hammering the wallet

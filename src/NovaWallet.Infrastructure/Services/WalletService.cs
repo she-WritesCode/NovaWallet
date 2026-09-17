@@ -161,7 +161,7 @@ public class WalletService : IWalletService
         {
             return await executionStrategy.ExecuteAsync(async () =>
             {
-                await using var dbTx = _dbContext.Database.IsRelational() 
+                await using var dbTx = _dbContext.Database.IsRelational()
                     ? await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken)
                     : null;
 
@@ -290,11 +290,11 @@ public class WalletService : IWalletService
             throw new SameWalletTransferException(command.SourceWalletId);
         }
 
-        var firstId = command.SourceWalletId.CompareTo(command.DestinationWalletId) < 0 
-            ? command.SourceWalletId 
+        var firstId = command.SourceWalletId.CompareTo(command.DestinationWalletId) < 0
+            ? command.SourceWalletId
             : command.DestinationWalletId;
-        var secondId = firstId == command.SourceWalletId 
-            ? command.DestinationWalletId 
+        var secondId = firstId == command.SourceWalletId
+            ? command.DestinationWalletId
             : command.SourceWalletId;
 
         var executionStrategy = _dbContext.Database.CreateExecutionStrategy();
@@ -312,212 +312,212 @@ public class WalletService : IWalletService
         {
             return await executionStrategy.ExecuteAsync(async () =>
             {
-                await using var dbTx = _dbContext.Database.IsRelational() 
+                await using var dbTx = _dbContext.Database.IsRelational()
                     ? await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken)
                     : null;
 
-            Wallet? firstWallet;
-            Wallet? secondWallet;
+                Wallet? firstWallet;
+                Wallet? secondWallet;
 
-            if (_dbContext.Database.IsNpgsql())
-            {
-                firstWallet = await _dbContext.Wallets
-                    .FromSqlInterpolated($"SELECT * FROM \"Wallets\" WHERE \"Id\" = {firstId} FOR UPDATE")
-                    .FirstOrDefaultAsync(cancellationToken);
+                if (_dbContext.Database.IsNpgsql())
+                {
+                    firstWallet = await _dbContext.Wallets
+                        .FromSqlInterpolated($"SELECT * FROM \"Wallets\" WHERE \"Id\" = {firstId} FOR UPDATE")
+                        .FirstOrDefaultAsync(cancellationToken);
 
-                secondWallet = await _dbContext.Wallets
-                    .FromSqlInterpolated($"SELECT * FROM \"Wallets\" WHERE \"Id\" = {secondId} FOR UPDATE")
-                    .FirstOrDefaultAsync(cancellationToken);
-            }
-            else
-            {
-                firstWallet = await _dbContext.Wallets
-                    .FirstOrDefaultAsync(w => w.Id == firstId, cancellationToken);
+                    secondWallet = await _dbContext.Wallets
+                        .FromSqlInterpolated($"SELECT * FROM \"Wallets\" WHERE \"Id\" = {secondId} FOR UPDATE")
+                        .FirstOrDefaultAsync(cancellationToken);
+                }
+                else
+                {
+                    firstWallet = await _dbContext.Wallets
+                        .FirstOrDefaultAsync(w => w.Id == firstId, cancellationToken);
 
-                secondWallet = await _dbContext.Wallets
-                    .FirstOrDefaultAsync(w => w.Id == secondId, cancellationToken);
-            }
+                    secondWallet = await _dbContext.Wallets
+                        .FirstOrDefaultAsync(w => w.Id == secondId, cancellationToken);
+                }
 
-            var sourceWallet = firstId == command.SourceWalletId ? firstWallet : secondWallet;
-            var destinationWallet = firstId == command.DestinationWalletId ? firstWallet : secondWallet;
+                var sourceWallet = firstId == command.SourceWalletId ? firstWallet : secondWallet;
+                var destinationWallet = firstId == command.DestinationWalletId ? firstWallet : secondWallet;
 
-            if (sourceWallet == null)
-            {
-                throw new WalletNotFoundException(command.SourceWalletId);
-            }
+                if (sourceWallet == null)
+                {
+                    throw new WalletNotFoundException(command.SourceWalletId);
+                }
 
-            if (destinationWallet == null)
-            {
-                throw new WalletNotFoundException(command.DestinationWalletId);
-            }
+                if (destinationWallet == null)
+                {
+                    throw new WalletNotFoundException(command.DestinationWalletId);
+                }
 
-            if (sourceWallet.Status != WalletStatus.Active)
-            {
-                throw new WalletFrozenException(sourceWallet.Id);
-            }
+                if (sourceWallet.Status != WalletStatus.Active)
+                {
+                    throw new WalletFrozenException(sourceWallet.Id);
+                }
 
-            if (destinationWallet.Status != WalletStatus.Active)
-            {
-                throw new WalletFrozenException(destinationWallet.Id);
-            }
+                if (destinationWallet.Status != WalletStatus.Active)
+                {
+                    throw new WalletFrozenException(destinationWallet.Id);
+                }
 
-            // Ensure matching currencies (cross-currency transfers require FX engine)
-            if (!string.Equals(sourceWallet.Currency, destinationWallet.Currency, StringComparison.OrdinalIgnoreCase))
-            {
-                throw new CurrencyMismatchException(sourceWallet.Currency, destinationWallet.Currency);
-            }
+                // Ensure matching currencies (cross-currency transfers require FX engine)
+                if (!string.Equals(sourceWallet.Currency, destinationWallet.Currency, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new CurrencyMismatchException(sourceWallet.Currency, destinationWallet.Currency);
+                }
 
-            // Midnight WAT Daily Limit check (guarded against overflow)
-            var todayWat = GetTodayWatDate();
-            if (sourceWallet.DailyLimitResetDate != todayWat)
-            {
-                sourceWallet.DailyOutboundTotalKobo = 0L;
-                sourceWallet.DailyLimitResetDate = todayWat;
-            }
+                // Midnight WAT Daily Limit check (guarded against overflow)
+                var todayWat = GetTodayWatDate();
+                if (sourceWallet.DailyLimitResetDate != todayWat)
+                {
+                    sourceWallet.DailyOutboundTotalKobo = 0L;
+                    sourceWallet.DailyLimitResetDate = todayWat;
+                }
 
-            if (long.MaxValue - sourceWallet.DailyOutboundTotalKobo < command.AmountKobo ||
-                sourceWallet.DailyOutboundTotalKobo + command.AmountKobo > _dailyLimitKobo)
-            {
-                throw new DailyLimitExceededException(
-                    sourceWallet.Id, 
-                    command.AmountKobo, 
-                    sourceWallet.DailyOutboundTotalKobo, 
-                    _dailyLimitKobo,
-                    sourceWallet.Currency);
-            }
+                if (long.MaxValue - sourceWallet.DailyOutboundTotalKobo < command.AmountKobo ||
+                    sourceWallet.DailyOutboundTotalKobo + command.AmountKobo > _dailyLimitKobo)
+                {
+                    throw new DailyLimitExceededException(
+                        sourceWallet.Id,
+                        command.AmountKobo,
+                        sourceWallet.DailyOutboundTotalKobo,
+                        _dailyLimitKobo,
+                        sourceWallet.Currency);
+                }
 
-            // Balance check (never allow balance to go negative)
-            if (sourceWallet.AvailableBalanceKobo < command.AmountKobo)
-            {
-                throw new InsufficientFundsException(
-                    sourceWallet.Id, 
-                    command.AmountKobo, 
-                    sourceWallet.AvailableBalanceKobo,
-                    sourceWallet.Currency);
-            }
+                // Balance check (never allow balance to go negative)
+                if (sourceWallet.AvailableBalanceKobo < command.AmountKobo)
+                {
+                    throw new InsufficientFundsException(
+                        sourceWallet.Id,
+                        command.AmountKobo,
+                        sourceWallet.AvailableBalanceKobo,
+                        sourceWallet.Currency);
+                }
 
-            // Protect destination balance against arithmetic overflow wrap-around
-            if (long.MaxValue - destinationWallet.AvailableBalanceKobo < command.AmountKobo)
-            {
-                throw new InvalidAmountException(command.AmountKobo);
-            }
+                // Protect destination balance against arithmetic overflow wrap-around
+                if (long.MaxValue - destinationWallet.AvailableBalanceKobo < command.AmountKobo)
+                {
+                    throw new InvalidAmountException(command.AmountKobo);
+                }
 
-            var now = DateTime.UtcNow;
+                var now = DateTime.UtcNow;
 
-            var sourceBefore = sourceWallet.BookBalanceKobo;
-            var sourceAfter = checked(sourceBefore - command.AmountKobo);
+                var sourceBefore = sourceWallet.BookBalanceKobo;
+                var sourceAfter = checked(sourceBefore - command.AmountKobo);
 
-            var destBefore = destinationWallet.BookBalanceKobo;
-            var destAfter = checked(destBefore + command.AmountKobo);
+                var destBefore = destinationWallet.BookBalanceKobo;
+                var destAfter = checked(destBefore + command.AmountKobo);
 
-            // Mutate balances in lockstep
-            checked
-            {
-                sourceWallet.AvailableBalanceKobo -= command.AmountKobo;
-                sourceWallet.BookBalanceKobo -= command.AmountKobo;
-                sourceWallet.DailyOutboundTotalKobo += command.AmountKobo;
-                sourceWallet.UpdatedAt = now;
+                // Mutate balances in lockstep
+                checked
+                {
+                    sourceWallet.AvailableBalanceKobo -= command.AmountKobo;
+                    sourceWallet.BookBalanceKobo -= command.AmountKobo;
+                    sourceWallet.DailyOutboundTotalKobo += command.AmountKobo;
+                    sourceWallet.UpdatedAt = now;
 
-                destinationWallet.AvailableBalanceKobo += command.AmountKobo;
-                destinationWallet.BookBalanceKobo += command.AmountKobo;
-                destinationWallet.UpdatedAt = now;
-            }
+                    destinationWallet.AvailableBalanceKobo += command.AmountKobo;
+                    destinationWallet.BookBalanceKobo += command.AmountKobo;
+                    destinationWallet.UpdatedAt = now;
+                }
 
-            var reference = !string.IsNullOrWhiteSpace(command.Reference)
-                ? command.Reference
-                : $"TRF-{now:yyyyMMddHHmmss}-{Guid.NewGuid().ToString("N")[..8]}";
+                var reference = !string.IsNullOrWhiteSpace(command.Reference)
+                    ? command.Reference
+                    : $"TRF-{now:yyyyMMddHHmmss}-{Guid.NewGuid().ToString("N")[..8]}";
 
-            var transaction = new Transaction
-            {
-                Id = Guid.NewGuid(),
-                Reference = reference,
-                Type = TransactionType.Transfer,
-                Status = TransactionStatus.Completed,
-                Channel = command.Channel,
-                AmountKobo = command.AmountKobo,
-                FeeAmountKobo = 0L,
-                Currency = sourceWallet.Currency,
-                SourceWalletId = sourceWallet.Id,
-                DestinationWalletId = destinationWallet.Id,
-                Narration = command.Narration ?? "Transfer",
-                InitiatedBy = command.InitiatedBy,
-                IpAddress = command.IpAddress,
-                CreatedAt = now,
-                CompletedAt = now
-            };
+                var transaction = new Transaction
+                {
+                    Id = Guid.NewGuid(),
+                    Reference = reference,
+                    Type = TransactionType.Transfer,
+                    Status = TransactionStatus.Completed,
+                    Channel = command.Channel,
+                    AmountKobo = command.AmountKobo,
+                    FeeAmountKobo = 0L,
+                    Currency = sourceWallet.Currency,
+                    SourceWalletId = sourceWallet.Id,
+                    DestinationWalletId = destinationWallet.Id,
+                    Narration = command.Narration ?? "Transfer",
+                    InitiatedBy = command.InitiatedBy,
+                    IpAddress = command.IpAddress,
+                    CreatedAt = now,
+                    CompletedAt = now
+                };
 
-            // Double-entry postings: 1 Debit for source, 1 Credit for destination
-            var debitEntry = new LedgerEntry
-            {
-                Id = Guid.NewGuid(),
-                TransactionId = transaction.Id,
-                WalletId = sourceWallet.Id,
-                EntryType = EntryType.Debit,
-                AmountKobo = command.AmountKobo,
-                BalanceAfterKobo = sourceAfter,
-                CreatedAt = now
-            };
+                // Double-entry postings: 1 Debit for source, 1 Credit for destination
+                var debitEntry = new LedgerEntry
+                {
+                    Id = Guid.NewGuid(),
+                    TransactionId = transaction.Id,
+                    WalletId = sourceWallet.Id,
+                    EntryType = EntryType.Debit,
+                    AmountKobo = command.AmountKobo,
+                    BalanceAfterKobo = sourceAfter,
+                    CreatedAt = now
+                };
 
-            var creditEntry = new LedgerEntry
-            {
-                Id = Guid.NewGuid(),
-                TransactionId = transaction.Id,
-                WalletId = destinationWallet.Id,
-                EntryType = EntryType.Credit,
-                AmountKobo = command.AmountKobo,
-                BalanceAfterKobo = destAfter,
-                CreatedAt = now
-            };
+                var creditEntry = new LedgerEntry
+                {
+                    Id = Guid.NewGuid(),
+                    TransactionId = transaction.Id,
+                    WalletId = destinationWallet.Id,
+                    EntryType = EntryType.Credit,
+                    AmountKobo = command.AmountKobo,
+                    BalanceAfterKobo = destAfter,
+                    CreatedAt = now
+                };
 
-            // Immutable audit logs
-            var sourceAudit = new AuditLog
-            {
-                Id = Guid.NewGuid(),
-                WalletId = sourceWallet.Id,
-                TransactionId = transaction.Id,
-                EventType = "WalletDebited",
-                AmountKobo = command.AmountKobo,
-                BalanceBeforeKobo = sourceBefore,
-                BalanceAfterKobo = sourceAfter,
-                PerformedBy = command.InitiatedBy,
-                IpAddress = command.IpAddress,
-                CreatedAt = now
-            };
+                // Immutable audit logs
+                var sourceAudit = new AuditLog
+                {
+                    Id = Guid.NewGuid(),
+                    WalletId = sourceWallet.Id,
+                    TransactionId = transaction.Id,
+                    EventType = "WalletDebited",
+                    AmountKobo = command.AmountKobo,
+                    BalanceBeforeKobo = sourceBefore,
+                    BalanceAfterKobo = sourceAfter,
+                    PerformedBy = command.InitiatedBy,
+                    IpAddress = command.IpAddress,
+                    CreatedAt = now
+                };
 
-            var destAudit = new AuditLog
-            {
-                Id = Guid.NewGuid(),
-                WalletId = destinationWallet.Id,
-                TransactionId = transaction.Id,
-                EventType = "WalletCredited",
-                AmountKobo = command.AmountKobo,
-                BalanceBeforeKobo = destBefore,
-                BalanceAfterKobo = destAfter,
-                PerformedBy = command.InitiatedBy,
-                IpAddress = command.IpAddress,
-                CreatedAt = now
-            };
+                var destAudit = new AuditLog
+                {
+                    Id = Guid.NewGuid(),
+                    WalletId = destinationWallet.Id,
+                    TransactionId = transaction.Id,
+                    EventType = "WalletCredited",
+                    AmountKobo = command.AmountKobo,
+                    BalanceBeforeKobo = destBefore,
+                    BalanceAfterKobo = destAfter,
+                    PerformedBy = command.InitiatedBy,
+                    IpAddress = command.IpAddress,
+                    CreatedAt = now
+                };
 
-            _dbContext.Transactions.Add(transaction);
-            _dbContext.LedgerEntries.AddRange(debitEntry, creditEntry);
-            _dbContext.AuditLogs.AddRange(sourceAudit, destAudit);
+                _dbContext.Transactions.Add(transaction);
+                _dbContext.LedgerEntries.AddRange(debitEntry, creditEntry);
+                _dbContext.AuditLogs.AddRange(sourceAudit, destAudit);
 
-            await _dbContext.SaveChangesAsync(cancellationToken);
-            if (dbTx != null) await dbTx.CommitAsync(cancellationToken);
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                if (dbTx != null) await dbTx.CommitAsync(cancellationToken);
 
-            _logger.LogInformation(
-                "Transfer successful: {Amount} kobo from {Source} to {Dest}. Ref: {Ref}",
-                command.AmountKobo, sourceWallet.Id, destinationWallet.Id, transaction.Reference);
+                _logger.LogInformation(
+                    "Transfer successful: {Amount} kobo from {Source} to {Dest}. Ref: {Ref}",
+                    command.AmountKobo, sourceWallet.Id, destinationWallet.Id, transaction.Reference);
 
-            return transaction;
-        });
+                return transaction;
+            });
+        }
+        finally
+        {
+            lock2?.Dispose();
+            lock1?.Dispose();
+        }
     }
-    finally
-    {
-        lock2?.Dispose();
-        lock1?.Dispose();
-    }
-}
 
     public async Task<PaginatedList<StatementEntryResult>> GetStatementAsync(
         Guid walletId,
