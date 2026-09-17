@@ -109,10 +109,62 @@ This will:
 
 ---
 
-## 5. Running Automated & Concurrency Tests
+## 5. API Reference & Endpoints
+
+All endpoints (except `POST /api/auth/token` and `GET /health`) are protected by a JWT Bearer check.
+
+| Method | Endpoint | Description | Auth Required | Key Headers |
+| :--- | :--- | :--- | :---: | :--- |
+| `POST` | `/api/auth/token` | Generates a valid test JWT token with customer claims | ❌ No | — |
+| `GET` | `/health` | Health & database connectivity check | ❌ No | — |
+| `POST` | `/api/wallets` | Creates a new wallet (initial balance = ₦0.00) | ✅ Yes | `Authorization: Bearer <token>` |
+| `GET` | `/api/wallets/{id}/balance` | Retrieves wallet balance & currency in kobo | ✅ Yes | `Authorization: Bearer <token>` |
+| `POST` | `/api/wallets/{id}/credit` | Simulates an inbound NIP instant settlement deposit | ✅ Yes | `Authorization: Bearer <token>` |
+| `POST` | `/api/wallets/{id}/transfer` | Concurrency-safe atomic transfer between wallets | ✅ Yes | `Idempotency-Key: <unique-key>`, `Authorization: Bearer <token>` |
+| `GET` | `/api/wallets/{id}/statement` | Returns paginated transaction statement (newest first) | ✅ Yes | `Authorization: Bearer <token>` |
+
+### Quick Test Workflow with cURL:
+
+```bash
+# 1. Generate JWT Token
+TOKEN=$(curl -s -X POST "http://localhost:8080/api/auth/token?customerId=CUST-001" | grep -o '"token":"[^"]*' | cut -d'"' -f4)
+
+# 2. Create Source Wallet
+WALLET_A=$(curl -s -X POST "http://localhost:8080/api/wallets" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"customerId":"CUST-ALICE","currency":"NGN"}' | grep -o '"id":"[^"]*' | cut -d'"' -f4)
+
+# 3. Create Destination Wallet
+WALLET_B=$(curl -s -X POST "http://localhost:8080/api/wallets" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"customerId":"CUST-BOB","currency":"NGN"}' | grep -o '"id":"[^"]*' | cut -d'"' -f4)
+
+# 4. Inbound NIP Credit to Alice (₦50,000 = 5,000,000 kobo)
+curl -X POST "http://localhost:8080/api/wallets/$WALLET_A/credit" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"amountKobo":5000000,"narration":"Inbound NIP salary"}'
+
+# 5. Idempotent Transfer from Alice to Bob (₦15,000 = 1,500,000 kobo)
+curl -i -X POST "http://localhost:8080/api/wallets/$WALLET_A/transfer" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: transfer-req-uuid-001" \
+  -H "Content-Type: application/json" \
+  -d "{\"destinationWalletId\":\"$WALLET_B\",\"amountKobo\":1500000,\"narration\":\"Rent contribution\"}"
+```
+
+---
+
+## 6. Running Automated & Concurrency Tests
 
 ```bash
 dotnet test
 ```
 
-_(Tests include unit validations, idempotency replays, and multi-threaded parallel transfers testing balance invariants under concurrent load)._
+The test suite runs:
+* **`ConcurrencyTests.cs`**: Fires 20 concurrent transfer tasks of ₦1,000 simultaneously against a wallet holding ₦10,000. Asserts that exactly 10 succeed, exactly 10 fail with `InsufficientFundsException`, balance never drops below zero, and total system money is conserved.
+* **`IdempotencyServiceTests.cs`**: Proves exact replay returns cached responses with `X-Cache: HIT` and payload alterations return `422 IDEMPOTENCY_KEY_PAYLOAD_MISMATCH`.
+* **`WalletServiceTests.cs`**: Validates wallet creation, inbound NIP deposits, daily limit bounds, WAT midnight rollover, and error formatting.
+

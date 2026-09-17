@@ -165,3 +165,28 @@ public class DuplicateWalletException : WalletDomainException
         Currency = currency;
     }
 }
+
+public class IdempotencyConflictException : WalletDomainException
+{
+    public override string ErrorCode => "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH";
+    public override int StatusCode => 422;
+
+    public string IdempotencyKey { get; }
+
+    public IdempotencyConflictException(string idempotencyKey)
+        : base("The provided Idempotency-Key was previously used with a different request payload.")
+    {
+        IdempotencyKey = idempotencyKey;
+    }
+}
+
+public class MissingIdempotencyKeyException : WalletDomainException
+{
+    public override string ErrorCode => "MISSING_IDEMPOTENCY_KEY";
+    public override int StatusCode => 400;
+
+    public MissingIdempotencyKeyException()
+        : base("The 'Idempotency-Key' request header is required for this operation.")
+    {
+    }
+}

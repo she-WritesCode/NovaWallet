@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -16,6 +17,23 @@ public class WalletService : IWalletService
     private readonly AppDbContext _dbContext;
     private readonly ILogger<WalletService> _logger;
     private readonly long _dailyLimitKobo;
+
+    // Keyed in-process locks for deterministic synchronization in non-PostgreSQL (in-memory testing) environments
+    private static readonly ConcurrentDictionary<Guid, SemaphoreSlim> KeyedLocks = new();
+
+    private static async Task<IDisposable> AcquireLockAsync(Guid key, CancellationToken ct)
+    {
+        var semaphore = KeyedLocks.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+        await semaphore.WaitAsync(ct);
+        return new Releaser(semaphore);
+    }
+
+    private sealed class Releaser : IDisposable
+    {
+        private readonly SemaphoreSlim _semaphore;
+        public Releaser(SemaphoreSlim semaphore) => _semaphore = semaphore;
+        public void Dispose() => _semaphore.Release();
+    }
 
     public WalletService(
         AppDbContext dbContext,
@@ -133,95 +151,119 @@ public class WalletService : IWalletService
 
         var executionStrategy = _dbContext.Database.CreateExecutionStrategy();
 
-        return await executionStrategy.ExecuteAsync(async () =>
+        IDisposable? inMemoryLock = null;
+        if (!_dbContext.Database.IsNpgsql())
         {
-            await using var dbTx = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+            inMemoryLock = await AcquireLockAsync(command.DestinationWalletId, cancellationToken);
+        }
 
-            // Pessimistic lock on the destination wallet row
-            var wallet = await _dbContext.Wallets
-                .FromSqlInterpolated($"SELECT * FROM \"Wallets\" WHERE \"Id\" = {command.DestinationWalletId} FOR UPDATE")
-                .FirstOrDefaultAsync(cancellationToken);
-
-            if (wallet == null)
+        try
+        {
+            return await executionStrategy.ExecuteAsync(async () =>
             {
-                throw new WalletNotFoundException(command.DestinationWalletId);
-            }
+                await using var dbTx = _dbContext.Database.IsRelational() 
+                    ? await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken)
+                    : null;
 
-            if (wallet.Status != WalletStatus.Active)
-            {
-                throw new WalletFrozenException(wallet.Id);
-            }
+                // Pessimistic lock on the destination wallet row (in PostgreSQL)
+                Wallet? wallet;
+                if (_dbContext.Database.IsNpgsql())
+                {
+                    wallet = await _dbContext.Wallets
+                        .FromSqlInterpolated($"SELECT * FROM \"Wallets\" WHERE \"Id\" = {command.DestinationWalletId} FOR UPDATE")
+                        .FirstOrDefaultAsync(cancellationToken);
+                }
+                else
+                {
+                    wallet = await _dbContext.Wallets
+                        .FirstOrDefaultAsync(w => w.Id == command.DestinationWalletId, cancellationToken);
+                }
 
-            var now = DateTime.UtcNow;
-            var beforeBalance = wallet.BookBalanceKobo;
-            var afterBalance = beforeBalance + command.AmountKobo;
+                if (wallet == null)
+                {
+                    throw new WalletNotFoundException(command.DestinationWalletId);
+                }
 
-            // Mutate balances in sync
-            wallet.AvailableBalanceKobo += command.AmountKobo;
-            wallet.BookBalanceKobo += command.AmountKobo;
-            wallet.UpdatedAt = now;
+                if (wallet.Status != WalletStatus.Active)
+                {
+                    throw new WalletFrozenException(wallet.Id);
+                }
 
-            var reference = !string.IsNullOrWhiteSpace(command.Reference)
-                ? command.Reference
-                : $"DEP-{now:yyyyMMddHHmmss}-{Guid.NewGuid():N[..8]}";
+                var now = DateTime.UtcNow;
+                var beforeBalance = wallet.BookBalanceKobo;
+                var afterBalance = beforeBalance + command.AmountKobo;
 
-            var transaction = new Transaction
-            {
-                Id = Guid.NewGuid(),
-                Reference = reference,
-                Type = TransactionType.Deposit,
-                Status = TransactionStatus.Completed,
-                Channel = command.Channel,
-                AmountKobo = command.AmountKobo,
-                FeeAmountKobo = 0L,
-                Currency = wallet.Currency,
-                SourceWalletId = null, // Inbound NIP money originates outside internal system
-                DestinationWalletId = wallet.Id,
-                Narration = command.Narration ?? "Inbound NIP deposit",
-                InitiatedBy = command.InitiatedBy,
-                IpAddress = command.IpAddress,
-                CreatedAt = now,
-                CompletedAt = now
-            };
+                // Mutate balances in sync
+                wallet.AvailableBalanceKobo += command.AmountKobo;
+                wallet.BookBalanceKobo += command.AmountKobo;
+                wallet.UpdatedAt = now;
 
-            var ledgerEntry = new LedgerEntry
-            {
-                Id = Guid.NewGuid(),
-                TransactionId = transaction.Id,
-                WalletId = wallet.Id,
-                EntryType = EntryType.Credit,
-                AmountKobo = command.AmountKobo,
-                BalanceAfterKobo = afterBalance,
-                CreatedAt = now
-            };
+                var reference = !string.IsNullOrWhiteSpace(command.Reference)
+                    ? command.Reference
+                    : $"DEP-{now:yyyyMMddHHmmss}-{Guid.NewGuid().ToString("N")[..8]}";
 
-            var auditLog = new AuditLog
-            {
-                Id = Guid.NewGuid(),
-                WalletId = wallet.Id,
-                TransactionId = transaction.Id,
-                EventType = "WalletCredited",
-                AmountKobo = command.AmountKobo,
-                BalanceBeforeKobo = beforeBalance,
-                BalanceAfterKobo = afterBalance,
-                PerformedBy = command.InitiatedBy,
-                IpAddress = command.IpAddress,
-                CreatedAt = now
-            };
+                var transaction = new Transaction
+                {
+                    Id = Guid.NewGuid(),
+                    Reference = reference,
+                    Type = TransactionType.Deposit,
+                    Status = TransactionStatus.Completed,
+                    Channel = command.Channel,
+                    AmountKobo = command.AmountKobo,
+                    FeeAmountKobo = 0L,
+                    Currency = wallet.Currency,
+                    SourceWalletId = null, // Inbound NIP money originates outside internal system
+                    DestinationWalletId = wallet.Id,
+                    Narration = command.Narration ?? "Inbound NIP deposit",
+                    InitiatedBy = command.InitiatedBy,
+                    IpAddress = command.IpAddress,
+                    CreatedAt = now,
+                    CompletedAt = now
+                };
 
-            _dbContext.Transactions.Add(transaction);
-            _dbContext.LedgerEntries.Add(ledgerEntry);
-            _dbContext.AuditLogs.Add(auditLog);
+                var ledgerEntry = new LedgerEntry
+                {
+                    Id = Guid.NewGuid(),
+                    TransactionId = transaction.Id,
+                    WalletId = wallet.Id,
+                    EntryType = EntryType.Credit,
+                    AmountKobo = command.AmountKobo,
+                    BalanceAfterKobo = afterBalance,
+                    CreatedAt = now
+                };
 
-            await _dbContext.SaveChangesAsync(cancellationToken);
-            await dbTx.CommitAsync(cancellationToken);
+                var auditLog = new AuditLog
+                {
+                    Id = Guid.NewGuid(),
+                    WalletId = wallet.Id,
+                    TransactionId = transaction.Id,
+                    EventType = "WalletCredited",
+                    AmountKobo = command.AmountKobo,
+                    BalanceBeforeKobo = beforeBalance,
+                    BalanceAfterKobo = afterBalance,
+                    PerformedBy = command.InitiatedBy,
+                    IpAddress = command.IpAddress,
+                    CreatedAt = now
+                };
 
-            _logger.LogInformation(
-                "Credited wallet {WalletId} with {Amount} kobo. Ref: {Reference}",
-                wallet.Id, command.AmountKobo, transaction.Reference);
+                _dbContext.Transactions.Add(transaction);
+                _dbContext.LedgerEntries.Add(ledgerEntry);
+                _dbContext.AuditLogs.Add(auditLog);
 
-            return transaction;
-        });
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                if (dbTx != null) await dbTx.CommitAsync(cancellationToken);
+
+                _logger.LogInformation(
+                    "Credited wallet {WalletId} with {Amount} kobo. Ref: {Reference}",
+                    wallet.Id, command.AmountKobo, transaction.Reference);
+
+                return transaction;
+            });
+        }
+        finally
+        {
+            inMemoryLock?.Dispose();
+        }
     }
 
     public async Task<Transaction> TransferAsync(
@@ -238,27 +280,53 @@ public class WalletService : IWalletService
             throw new SameWalletTransferException(command.SourceWalletId);
         }
 
+        var firstId = command.SourceWalletId.CompareTo(command.DestinationWalletId) < 0 
+            ? command.SourceWalletId 
+            : command.DestinationWalletId;
+        var secondId = firstId == command.SourceWalletId 
+            ? command.DestinationWalletId 
+            : command.SourceWalletId;
+
         var executionStrategy = _dbContext.Database.CreateExecutionStrategy();
 
-        return await executionStrategy.ExecuteAsync(async () =>
+        IDisposable? lock1 = null;
+        IDisposable? lock2 = null;
+
+        if (!_dbContext.Database.IsNpgsql())
         {
-            await using var dbTx = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+            lock1 = await AcquireLockAsync(firstId, cancellationToken);
+            lock2 = await AcquireLockAsync(secondId, cancellationToken);
+        }
 
-            // Deterministic row-locking order: guarantees no circular wait / deadlocks
-            var firstId = command.SourceWalletId.CompareTo(command.DestinationWalletId) < 0
-                ? command.SourceWalletId
-                : command.DestinationWalletId;
-            var secondId = firstId == command.SourceWalletId
-                ? command.DestinationWalletId
-                : command.SourceWalletId;
+        try
+        {
+            return await executionStrategy.ExecuteAsync(async () =>
+            {
+                await using var dbTx = _dbContext.Database.IsRelational() 
+                    ? await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken)
+                    : null;
 
-            var firstWallet = await _dbContext.Wallets
-                .FromSqlInterpolated($"SELECT * FROM \"Wallets\" WHERE \"Id\" = {firstId} FOR UPDATE")
-                .FirstOrDefaultAsync(cancellationToken);
+            Wallet? firstWallet;
+            Wallet? secondWallet;
 
-            var secondWallet = await _dbContext.Wallets
-                .FromSqlInterpolated($"SELECT * FROM \"Wallets\" WHERE \"Id\" = {secondId} FOR UPDATE")
-                .FirstOrDefaultAsync(cancellationToken);
+            if (_dbContext.Database.IsNpgsql())
+            {
+                firstWallet = await _dbContext.Wallets
+                    .FromSqlInterpolated($"SELECT * FROM \"Wallets\" WHERE \"Id\" = {firstId} FOR UPDATE")
+                    .FirstOrDefaultAsync(cancellationToken);
+
+                secondWallet = await _dbContext.Wallets
+                    .FromSqlInterpolated($"SELECT * FROM \"Wallets\" WHERE \"Id\" = {secondId} FOR UPDATE")
+                    .FirstOrDefaultAsync(cancellationToken);
+            }
+            else
+            {
+                firstWallet = await _dbContext.Wallets
+                    .FirstOrDefaultAsync(w => w.Id == firstId, cancellationToken);
+
+                secondWallet = await _dbContext.Wallets
+                    .FirstOrDefaultAsync(w => w.Id == secondId, cancellationToken);
+            }
 
             var sourceWallet = firstId == command.SourceWalletId ? firstWallet : secondWallet;
             var destinationWallet = firstId == command.DestinationWalletId ? firstWallet : secondWallet;
@@ -337,7 +405,7 @@ public class WalletService : IWalletService
 
             var reference = !string.IsNullOrWhiteSpace(command.Reference)
                 ? command.Reference
-                : $"TRF-{now:yyyyMMddHHmmss}-{Guid.NewGuid():N[..8]}";
+                : $"TRF-{now:yyyyMMddHHmmss}-{Guid.NewGuid().ToString("N")[..8]}";
 
             var transaction = new Transaction
             {
@@ -415,7 +483,7 @@ public class WalletService : IWalletService
             _dbContext.AuditLogs.AddRange(sourceAudit, destAudit);
 
             await _dbContext.SaveChangesAsync(cancellationToken);
-            await dbTx.CommitAsync(cancellationToken);
+            if (dbTx != null) await dbTx.CommitAsync(cancellationToken);
 
             _logger.LogInformation(
                 "Transfer successful: {Amount} kobo from {Source} to {Dest}. Ref: {Ref}",
@@ -424,6 +492,12 @@ public class WalletService : IWalletService
             return transaction;
         });
     }
+    finally
+    {
+        lock2?.Dispose();
+        lock1?.Dispose();
+    }
+}
 
     public async Task<PaginatedList<StatementEntryResult>> GetStatementAsync(
         Guid walletId,
